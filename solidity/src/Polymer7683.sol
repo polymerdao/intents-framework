@@ -5,6 +5,7 @@ import { ICrossL2ProverV2 } from "@polymerdao/prover-contracts/interfaces/ICross
 import { OrderData, OrderEncoder } from "./libs/OrderEncoder.sol";
 import { BasicSwap7683 } from "./BasicSwap7683.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { TypeCasts } from "@hyperlane-xyz/libs/TypeCasts.sol";
 
 /**
  * @title Polymer7683
@@ -67,18 +68,32 @@ contract Polymer7683 is BasicSwap7683, Ownable {
      * @param eventProof The proof of the Fill event from the destination chain
      * @param eventProof The proof of the Fill event from the destination chain
      */
-    function handleSettlementWithProof(
-        bytes calldata eventProof
-    ) external {
-        // 1. Verify event using Polymer prover
+    function handleSettlementWithProof(bytes calldata eventProof) external {
+        // Verify event using Polymer prover
         (
-            bytes32 eventOrderId,
-            , // originData
-            bytes memory fillerData
-        ) = _validateSettlementProof(eventProof);
+            uint32 provenChainId,
+            address emitter,
+            ,  // topics
+            bytes memory data
+        ) = prover.validateEvent(eventProof);
 
-        // 2. Process settlement - this function internally checks if the order is OPENED
-        _handleSettleOrder(eventOrderId, abi.decode(fillerData, (bytes32)));
+        // Verify destination contract is registered for the proven chain
+        address expectedEmitter = destinationContracts[provenChainId];
+        if (expectedEmitter == address(0)) revert UnregisteredDestinationChain();
+
+        // Validate emitter matches registered destination
+        if (emitter != expectedEmitter) revert InvalidEmitter();
+
+        // Decode data from the Filled event format
+        (bytes32 eventOrderId, bytes memory originData, bytes memory fillerData) = abi.decode(data, (bytes32, bytes, bytes));
+
+        // Process settlement with the message origin, sender, order ID, and receiver
+        _handleSettleOrder(
+            provenChainId,
+            TypeCasts.addressToBytes32(emitter),
+            eventOrderId,
+            abi.decode(fillerData, (bytes32))
+        );
     }
 
     /**
@@ -86,12 +101,24 @@ contract Polymer7683 is BasicSwap7683, Ownable {
      * @param orderId The order ID being refunded
      * @param eventProof The proof of the Refund event from the destination chain
      */
-    function handleRefundWithProof(
-        bytes32 orderId,
-        bytes calldata eventProof
-    ) external {
-        // 1. Validate order ID is in the refunded set
-        bytes32[] memory eventOrderIds = _validateRefundProof(eventProof);
+    function handleRefundWithProof(bytes32 orderId, bytes calldata eventProof) external {
+        // Verify event using Polymer prover
+        (
+            uint32 provenChainId,
+            address emitter,
+            ,  // topics
+            bytes memory data
+        ) = prover.validateEvent(eventProof);
+
+        // Verify destination contract is registered for the proven chain
+        address expectedEmitter = destinationContracts[provenChainId];
+        if (expectedEmitter == address(0)) revert UnregisteredDestinationChain();
+
+        // Validate emitter matches registered destination
+        if (emitter != expectedEmitter) revert InvalidEmitter();
+
+        // Decode refund-specific data and validate order ID
+        bytes32[] memory eventOrderIds = abi.decode(data, (bytes32[]));
         bool found = false;
         for (uint256 i = 0; i < eventOrderIds.length; i++) {
             if (eventOrderIds[i] == orderId) {
@@ -101,8 +128,12 @@ contract Polymer7683 is BasicSwap7683, Ownable {
         }
         if (!found) revert InvalidEventData();
 
-        // 2. Process refund for the order
-        _handleRefundOrder(orderId);
+        // Process refund with message origin, sender, and order ID
+        _handleRefundOrder(
+            provenChainId,
+            TypeCasts.addressToBytes32(emitter),
+            orderId
+        );
     }
 
     // ============ Internal Functions ============
@@ -141,55 +172,4 @@ contract Polymer7683 is BasicSwap7683, Ownable {
         return uint32(localChainId);
     }
 
-    function _validateSettlementProof(
-        bytes calldata eventProof
-    ) private view returns (
-        bytes32 eventOrderId,
-        bytes memory originData,
-        bytes memory fillerData
-    ) {
-        (
-            uint32 provenChainId,
-            address actualEmitter,
-            ,  // topics
-            bytes memory data
-        ) = prover.validateEvent(eventProof);
-
-        // Decode data from the Filled event format
-        (eventOrderId, originData, fillerData) = abi.decode(data, (bytes32, bytes, bytes));
-
-        // Validate chain ID with origin data
-        OrderData memory orderData = OrderEncoder.decode(originData);
-        if (provenChainId != orderData.destinationDomain) {
-            revert InvalidChainId();
-        }
-
-        // Verify destination contract is registered for the proven chain
-        address expectedEmitter = destinationContracts[provenChainId];
-        if (expectedEmitter == address(0)) revert UnregisteredDestinationChain();
-
-        // Validate emitter matches registered destination
-        if (actualEmitter != expectedEmitter) revert InvalidEmitter();
-    }
-
-    function _validateRefundProof(
-        bytes calldata eventProof
-    ) private view returns (bytes32[] memory eventOrderIds) {
-        (
-            uint32 provenChainId,
-            address actualEmitter,  // Now using this parameter
-            ,  // topics
-            bytes memory data
-        ) = prover.validateEvent(eventProof);
-
-        // Verify destination contract is registered for the proven chain
-        address expectedEmitter = destinationContracts[provenChainId];
-        if (expectedEmitter == address(0)) revert UnregisteredDestinationChain();
-
-        // Validate emitter matches registered destination
-        if (actualEmitter != expectedEmitter) revert InvalidEmitter();
-
-        // Decode refund-specific data
-        eventOrderIds = abi.decode(data, (bytes32[]));
-    }
 }
