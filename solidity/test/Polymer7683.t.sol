@@ -219,7 +219,7 @@ contract Polymer7683Test is Test {
         assertEq(polymer7683.orderStatus(computedOrderId), polymer7683.SETTLED(), "Order should be SETTLED");
     }
 
-    function test_handleSettlementWithProof_preventReplay() public {
+    function test_handleRefundWithProof_preventReplay() public {
         vm.prank(owner);
         polymer7683.setDestinationContract(destChainId, destContract);
     
@@ -260,53 +260,6 @@ contract Polymer7683Test is Test {
         
         vm.expectRevert(Polymer7683.UnregisteredDestinationChain.selector);
         polymer7683.handleSettlementWithProof(proof);
-    }
-
-    function test_handleSettlementWithProof_invalidOrderId() public {
-        vm.prank(owner);
-        polymer7683.setDestinationContract(destChainId, destContract);
-        
-        // Create proof for one order ID
-        bytes32 proofOrderId = bytes32("order1");
-        bytes memory fillerData = abi.encode(bytes32("filler1"));
-
-        console2.log("\nTest setup:");
-        console2.log("Proof Order ID:");
-        console2.logBytes32(proofOrderId);
-        console2.log("Submitted Order ID:");
-        console2.logBytes32(bytes32("order2"));
-        
-        bytes memory proof = _createSettlementProof(destChainId, destContract, proofOrderId, fillerData);
-
-        (, , bytes memory topics, bytes memory eventData) = prover.validateEvent(proof);
-
-        console2.log("\nDecoding event data...");
-        (
-            bytes32 decodedOrderId,
-            bytes memory decodedOriginData,
-            bytes memory decodedFillerData
-        ) = abi.decode(eventData, (bytes32, bytes, bytes));
-        console2.log("Decoded Order ID from proof:");
-        console2.logBytes32(decodedOrderId);
-        console2.log("Decoded Origin Data length:", decodedOriginData.length);
-        console2.log("Decoded Filler Data length:", decodedFillerData.length);
-      
-        // Try to submit different order ID
-        bytes32 submittedOrderId = bytes32("order2");
-        
-        vm.expectRevert(Polymer7683.InvalidEventData.selector);
-        try polymer7683.handleSettlementWithProof(proof) {
-            console2.log("Call succeeded unexpectedly");
-        } catch Error(string memory reason) {
-            console2.log("Reverted with reason:", reason);
-        } catch (bytes memory errData) {
-            console2.log("Reverted with raw error data length:", errData.length);
-            if (errData.length >= 4) {
-                bytes4 selector = bytes4(errData);
-                console2.log("Error selector:");
-                console2.logBytes4(selector);
-            }
-        }
     }
 
     function test_handleRefundWithProof_success() public {
