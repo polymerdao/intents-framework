@@ -109,25 +109,19 @@ contract Polymer7683 is BasicSwap7683, Ownable {
             ,  // topics
             bytes memory data
         ) = prover.validateEvent(eventProof);
-
+    
         // Verify destination contract is registered for the proven chain
         address expectedEmitter = destinationContracts[provenChainId];
         if (expectedEmitter == address(0)) revert UnregisteredDestinationChain();
-
+    
         // Validate emitter matches registered destination
         if (emitter != expectedEmitter) revert InvalidEmitter();
-
-        // Decode refund-specific data and validate order ID
-        bytes32[] memory eventOrderIds = abi.decode(data, (bytes32[]));
-        bool found = false;
-        for (uint256 i = 0; i < eventOrderIds.length; i++) {
-            if (eventOrderIds[i] == orderId) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) revert InvalidEventData();
-
+    
+        (bytes32 eventOrderId, address refundReceiver) = abi.decode(data, (bytes32, address));
+        
+        // Validate orderId matches
+        if (eventOrderId != orderId) revert InvalidEventData();
+    
         // Process refund with message origin, sender, and order ID
         _handleRefundOrder(
             provenChainId,

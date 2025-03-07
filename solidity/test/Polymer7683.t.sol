@@ -11,6 +11,7 @@ import { LightClientType } from "@polymerdao/prover-contracts/interfaces/IClient
 import { ICrossL2ProverV2 } from "@polymerdao/prover-contracts/interfaces/ICrossL2ProverV2.sol";
 
 event Settled(bytes32 orderId, address receiver);
+event Refunded(bytes32 orderId, address receiver);
 
 contract MockCrossL2Prover is ICrossL2ProverV2 {
     uint32 public expectedChainId;
@@ -123,12 +124,14 @@ contract Polymer7683Test is Test {
         address emitter,
         bytes32[] memory orderIds
     ) internal returns (bytes memory) {
-        bytes32[] memory topicsArray = new bytes32[](1);
-        topicsArray[0] = keccak256("Refund(bytes32[])");
-        bytes memory topics = abi.encode(topicsArray);
-
-        bytes memory data = abi.encode(orderIds);
-    
+        bytes memory topics = abi.encodePacked(
+            keccak256("Refunded(bytes32,address)"),
+            bytes32(chainId)
+        );
+        
+        // For simplicity, use the first order ID and a fixed address (address(1))
+        bytes memory data = abi.encode(orderIds[0], address(1)); 
+        
         prover.setExpectedEvent(
             uint32(chainId),
             emitter,
@@ -263,42 +266,100 @@ contract Polymer7683Test is Test {
     }
 
     function test_handleRefundWithProof_success() public {
+        // Register destination contract
         vm.prank(owner);
         polymer7683.setDestinationContract(destChainId, destContract);
         
-        bytes32 orderId = bytes32("orderId1");
+        console2.log("\nTest setup:");
+        console2.log("Local Chain ID:", localChainId);
+        console2.log("Destination Chain ID:", destChainId);
+        console2.log("Destination Contract:", destContract);
         
-        // Create a single-element array for the proof creation
-        bytes32[] memory orderIdsForProof = new bytes32[](1);
-        orderIdsForProof[0] = orderId;
+        // Create sample order data
+        address user = address(this);
+        address recipient = makeAddr("recipient");
+        uint256 amountIn = 1e18;
+        uint256 amountOut = 2e18;
+        uint32 fillDeadline = uint32(block.timestamp + 1 hours);
         
-        bytes memory proof = _createRefundProof(destChainId, destContract, orderIdsForProof);
+        // Create an order on-chain first
+        OrderData memory orderData = OrderData({
+            sender: TypeCasts.addressToBytes32(user),
+            recipient: TypeCasts.addressToBytes32(recipient),
+            inputToken: bytes32(0), // Native token
+            outputToken: bytes32(0), // Native token
+            amountIn: amountIn,
+            amountOut: amountOut,
+            senderNonce: 0,
+            originDomain: uint32(localChainId),
+            destinationDomain: uint32(destChainId),
+            destinationSettler: TypeCasts.addressToBytes32(destContract),
+            fillDeadline: fillDeadline,
+            data: ""
+        });
         
-        // Add more detailed debug logs
+        bytes memory orderBytes = OrderEncoder.encode(orderData);
+        
+        // Create on-chain order
+        OnchainCrossChainOrder memory order = OnchainCrossChainOrder({
+            fillDeadline: fillDeadline, 
+            orderDataType: OrderEncoder.orderDataType(),
+            orderData: orderBytes
+        });
+        
+        // Open the order (this will emit Open event)
+        vm.deal(address(this), amountIn); // Give this contract some ETH
+        polymer7683.open{value: amountIn}(order);
+        
+        // Verify order is opened
+        bytes32 computedOrderId = OrderEncoder.id(orderData);
+        assertEq(polymer7683.orderStatus(computedOrderId), polymer7683.OPENED(), "Order should be OPENED");
+        
+        console2.log("\nOrder ID:");
+        console2.logBytes32(computedOrderId);
+        
+        // Warp time to make order expired (past fillDeadline)
+        vm.warp(block.timestamp + 2 hours);
+        console2.log("Current timestamp:", block.timestamp);
+        console2.log("Fill deadline:", fillDeadline);
+        console2.log("Is expired:", block.timestamp > fillDeadline);
+        
+        // Create array with single orderId for proof
+        bytes32[] memory orderIds = new bytes32[](1);
+        orderIds[0] = computedOrderId;
+        
+        bytes memory proof = _createRefundProof(destChainId, destContract, orderIds);
+        
+        // Debug event creation
         (, , bytes memory topics, bytes memory eventData) = prover.validateEvent(proof);
+        console2.log("\nEvent debug info:");
+        (bytes32 decodedOrderId, address refundReceiver) = abi.decode(eventData, (bytes32, address));
+        console2.log("Decoded order ID from proof:");
+        console2.logBytes32(decodedOrderId);
+        console2.log("Refund receiver:");
+        console2.log(refundReceiver);
+        console2.log("Expected order ID:");
+        console2.logBytes32(computedOrderId);
+        console2.log("Match:", decodedOrderId == computedOrderId);
         
-        console2.log("\nDecoding event data...");
-        bytes32[] memory decodedOrderIds = abi.decode(eventData, (bytes32[]));
+        address refundRecipient = user; // Refund goes back to the order creator
+        console2.log("\nRefund recipient:", refundRecipient);
         
-        console2.log("Expected orderId:");
-        console2.logBytes32(orderId);
-        console2.log("Decoded orderId:");
-        console2.logBytes32(decodedOrderIds[0]);
+        vm.expectEmit(true, true, false, false);
+        emit Refunded(computedOrderId, refundRecipient);
         
-        // Let's also log the expected event signature
-        bytes32 expectedSig = keccak256("Refund(bytes32[])");
-        console2.log("\nExpected event signature:");
-        console2.logBytes32(expectedSig);
-    
-        // Log the chain ID being used
-        console2.log("\nDestination chain ID:", destChainId);
-        
-        try polymer7683.handleRefundWithProof(orderId, proof) {
-            console2.log("Refund successful");
+        // Handle the refund proof and capture any errors
+        try polymer7683.handleRefundWithProof(computedOrderId, proof) {
+            console2.log("\nRefund processing succeeded");
+            
+            // Check the status after refund
+            bytes32 status = polymer7683.orderStatus(computedOrderId);
+            console2.log("Order status after refund:");
+            console2.logBytes32(status);
         } catch Error(string memory reason) {
-            console2.log("Refund failed with reason:", reason);
+            console2.log("\nRefund failed with reason:", reason);
         } catch (bytes memory errData) {
-            console2.log("Refund failed with raw error:");
+            console2.log("\nRefund failed with error data:");
             console2.logBytes(errData);
         }
     }
