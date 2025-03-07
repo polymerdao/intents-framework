@@ -10,6 +10,8 @@ import { Polymer7683 } from "../src/Polymer7683.sol";
 import { LightClientType } from "@polymerdao/prover-contracts/interfaces/IClientUpdates.sol";
 import { ICrossL2ProverV2 } from "@polymerdao/prover-contracts/interfaces/ICrossL2ProverV2.sol";
 
+event Settled(bytes32 orderId, address receiver);
+
 contract MockCrossL2Prover is ICrossL2ProverV2 {
     uint32 public expectedChainId;
     address public expectedEmitter;
@@ -149,62 +151,72 @@ contract Polymer7683Test is Test {
         // Register destination contract
         vm.prank(owner);
         polymer7683.setDestinationContract(destChainId, destContract);
-    
+        
         console2.log("\nTest setup:");
         console2.log("Local Chain ID:", localChainId);
         console2.log("Destination Chain ID:", destChainId);
         console2.log("Destination Contract:", destContract);
-    
-        // Create sample order ID and filler data
+        
+        // Create sample order data
         bytes32 orderId = bytes32("orderId1");
-        bytes memory fillerData = abi.encode(bytes32("filler1"));
-    
+        address user = address(this);
+        address recipient = makeAddr("recipient");
+        uint256 amountIn = 1e18;
+        uint256 amountOut = 2e18;
+        uint32 fillDeadline = uint32(block.timestamp + 1 hours);
+        
+        // Create an order on-chain first
+        OrderData memory orderData = OrderData({
+            sender: TypeCasts.addressToBytes32(user),
+            recipient: TypeCasts.addressToBytes32(recipient),
+            inputToken: bytes32(0), // Native token
+            outputToken: bytes32(0), // Native token
+            amountIn: amountIn,
+            amountOut: amountOut,
+            senderNonce: 0,
+            originDomain: uint32(localChainId),
+            destinationDomain: uint32(destChainId),
+            destinationSettler: TypeCasts.addressToBytes32(destContract),
+            fillDeadline: fillDeadline,
+            data: ""
+        });
+        
+        bytes memory orderBytes = OrderEncoder.encode(orderData);
+        
+        // Create on-chain order
+        OnchainCrossChainOrder memory order = OnchainCrossChainOrder({
+            fillDeadline: fillDeadline, 
+            orderDataType: OrderEncoder.orderDataType(),
+            orderData: orderBytes
+        });
+        
+        // Open the order (this will emit Open event)
+        vm.deal(address(this), amountIn); // Give this contract some ETH
+        polymer7683.open{value: amountIn}(order);
+        
+        // Verify order is opened
+        bytes32 computedOrderId = OrderEncoder.id(orderData);
+        assertEq(polymer7683.orderStatus(computedOrderId), polymer7683.OPENED(), "Order should be OPENED");
+        
         console2.log("\nOrder ID:");
-        console2.logBytes32(orderId);
-    
+        console2.logBytes32(computedOrderId);
+        
+        // Create filler data for settlement
+        bytes32 fillerAddress = TypeCasts.addressToBytes32(makeAddr("filler"));
+        bytes memory fillerData = abi.encode(fillerAddress);
+        
         // Create and submit settlement proof
-        bytes memory proof = _createSettlementProof(destChainId, destContract, orderId, fillerData);
-    
-        console2.log("\nSettlement proof details:");
-        console2.log("Proof length:", proof.length);
-    
-        // Get proof validation details
-        (
-            uint32 provenChainId,
-            address emitter,
-            bytes memory topics,
-            bytes memory data
-        ) = prover.validateEvent(proof);
-        console2.log("Proven Chain ID:", provenChainId);
-        console2.log("Emitter:", emitter);
-        console2.log("Topics length:", topics.length);
-        console2.log("Data length:", data.length);
-
-        console2.log("\nDecoding event data...");
-        (
-            bytes32 decodedOrderId,
-            bytes memory originData,
-            bytes memory decodedFillerData
-        ) = abi.decode(data, (bytes32, bytes, bytes));
-        console2.log("Decoded Order ID:");
-        console2.logBytes32(decodedOrderId);
-        console2.log("Origin Data length:", originData.length);
-        console2.log("Filler Data length:", decodedFillerData.length);
-
-        console2.log("\nSubmitting settlement proof...");
-
-        try polymer7683.handleSettlementWithProof(proof) {
-            console2.log("\nCall succeeded");
-        } catch Error(string memory reason) {
-            console2.log("\nReverted with reason:", reason);
-        } catch (bytes memory errData) {
-            console2.log("\nReverted with raw error data length:", errData.length);
-            if (errData.length >= 4) {
-                bytes4 selector = bytes4(errData);
-                console2.log("Error selector:");
-                console2.logBytes4(selector);
-            }
-        }
+        bytes memory proof = _createSettlementProof(destChainId, destContract, computedOrderId, fillerData);
+        
+        // Expect the Settled event to be emitted
+        vm.expectEmit(true, true, false, false); // Check topic1 and topic2
+        emit Settled(computedOrderId, TypeCasts.bytes32ToAddress(fillerAddress));
+        
+        // Handle the settlement proof
+        polymer7683.handleSettlementWithProof(proof);
+        
+        // Verify the order status changed to SETTLED
+        assertEq(polymer7683.orderStatus(computedOrderId), polymer7683.SETTLED(), "Order should be SETTLED");
     }
 
     function test_handleSettlementWithProof_preventReplay() public {
