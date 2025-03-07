@@ -129,8 +129,7 @@ contract Polymer7683Test is Test {
             bytes32(chainId)
         );
         
-        // For simplicity, use the first order ID and a fixed address (address(1))
-        bytes memory data = abi.encode(orderIds[0], address(1)); 
+        bytes memory data = abi.encode(orderIds[0], address(this)); 
         
         prover.setExpectedEvent(
             uint32(chainId),
@@ -308,7 +307,8 @@ contract Polymer7683Test is Test {
         });
         
         // Open the order (this will emit Open event)
-        vm.deal(address(this), amountIn); // Give this contract some ETH
+        vm.deal(address(this), 3e18); // Give this contract some ETH
+        vm.deal(address(polymer7683), 1e18);
         polymer7683.open{value: amountIn}(order);
         
         // Verify order is opened
@@ -342,7 +342,7 @@ contract Polymer7683Test is Test {
         console2.logBytes32(computedOrderId);
         console2.log("Match:", decodedOrderId == computedOrderId);
         
-        address refundRecipient = user; // Refund goes back to the order creator
+        address refundRecipient = address(this); 
         console2.log("\nRefund recipient:", refundRecipient);
         
         vm.expectEmit(true, true, false, false);
@@ -415,4 +415,6 @@ contract Polymer7683Test is Test {
         vm.expectRevert("Ownable: caller is not the owner");
         polymer7683.setDestinationContract(destChainId, destContract);
     }
+
+    receive() external payable {}
 }
