@@ -409,6 +409,26 @@ contract Polymer7683Test is Test {
         polymer7683.handleSettlementWithProof(proof);
     }
 
+    function test_handleSettlementWithProof_failsWhenNotSettled() public {
+        // Register destination contract
+        vm.prank(owner);
+        polymer7683.setDestinationContract(destChainId, destContract);
+        
+        // Create a mock order ID that doesn't exist in the system
+        bytes32 nonExistentOrderId = bytes32("nonExistentOrderId");
+        
+        // Create filler data for settlement
+        bytes memory fillerData = abi.encode(TypeCasts.addressToBytes32(makeAddr("filler")));
+        
+        // Create and submit settlement proof with valid verification but for an order
+        // that doesn't exist or isn't properly opened
+        bytes memory proof = _createSettlementProof(destChainId, destContract, nonExistentOrderId, fillerData);
+        
+        // Should revert with SettlementFailed because the order doesn't exist in openOrders
+        vm.expectRevert(Polymer7683.SettlementFailed.selector);
+        polymer7683.handleSettlementWithProof(proof);
+    }
+
     function test_setDestinationContract_onlyOwner() public {
         address nonOwner = makeAddr("nonOwner");
         vm.prank(nonOwner);

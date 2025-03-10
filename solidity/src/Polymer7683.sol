@@ -38,6 +38,7 @@ contract Polymer7683 is BasicSwap7683, Ownable {
     error InvalidEventData();
     error InvalidDestinationContract();
     error UnregisteredDestinationChain();
+    error SettlementFailed();
 
     // ============ Constructor ============
     /**
@@ -94,6 +95,12 @@ contract Polymer7683 is BasicSwap7683, Ownable {
             eventOrderId,
             abi.decode(fillerData, (bytes32))
         );
+
+        // _handleSettleOrder checks eligibility with
+        // _checkOrderEligibility and simply returns early without
+        // reverting if the order isn't eligible. we need to check if
+        // the order was settled successfully and revert if not.
+        if (orderStatus[eventOrderId] != SETTLED) revert SettlementFailed();
     }
 
     /**
